@@ -12,11 +12,13 @@ class Settings(BaseSettings):
     
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     
-    mongodb_uri: str = ""
+    mongodb_uri: str
     mongodb_db_name: str = "ai_library"
     
+    conversation_ttl_hours: int = 2  
+    
     app_name: str = "AI Library"
-    debug: bool = True
+    debug: bool = False
     
     model_config = SettingsConfigDict(
         env_file=".env",

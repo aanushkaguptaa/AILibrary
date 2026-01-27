@@ -35,7 +35,6 @@ class GroqService:
         if "max_tokens" in hyperparameters:
             langchain_params["max_tokens"] = hyperparameters["max_tokens"]
     
-        # Add model_kwargs for parameters not directly supported
         model_kwargs = {}
         if "top_p" in hyperparameters:
             model_kwargs["top_p"] = hyperparameters["top_p"]
@@ -92,7 +91,6 @@ class GroqService:
             model = payload.get("model")
             messages = payload.get("messages", [])
             
-            # Extract hyperparameters
             hyperparameters = {
                 k: v for k, v in payload.items() 
                 if k not in ["model", "messages", "stream"]
@@ -100,13 +98,10 @@ class GroqService:
             
             logger.info(f"Sending request to Groq: model={model}")
             
-            # Create LLM instance
             llm = self._create_llm(model, hyperparameters)
             
-            # Convert messages to LangChain format
             langchain_messages = self._convert_to_langchain_messages(messages)
             
-            # Stream the response
             async for chunk in llm.astream(langchain_messages):
                 if chunk.content:
                     yield chunk.content
@@ -125,14 +120,12 @@ class GroqService:
             True if the API key is valid, False otherwise
         """
         try:
-            # Try to create a simple LLM instance and make a test call
             llm = ChatGroq(
                 model="llama-3.1-8b-instant",
                 groq_api_key=self.api_key,
                 max_tokens=1
             )
             
-            # Make a minimal test request
             messages = [HumanMessage(content="Hi")]
             response = await llm.ainvoke(messages)
             

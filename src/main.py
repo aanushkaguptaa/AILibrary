@@ -1,3 +1,4 @@
+import json
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -7,7 +8,9 @@ from typing import AsyncGenerator
 
 from .config import settings
 from .models import ChatRequest, ErrorResponse
-from .services import GroqService, conversation_manager
+from .services import GroqService
+from .services.database import mongodb
+from .services.mongo_conversation import mongo_conversation_manager
 from .utils import setup_logging
 
 setup_logging()
@@ -21,6 +24,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"Debug mode: {settings.debug}")
     logger.info(f"CORS origins: {settings.cors_origins_list}")
     
+    try:
+        await mongodb.connect()
+        await mongo_conversation_manager.ensure_indexes()
+    except Exception as e:
+        logger.error(f"Failed to connect to MongoDB: {e}")
+        logger.warning("Application will continue without MongoDB support")
+    
     groq = GroqService()
     is_valid = await groq.validate_api_key()
     if not is_valid:
@@ -31,6 +41,7 @@ async def lifespan(app: FastAPI):
     yield
     
     logger.info("Shutting down application")
+    await mongodb.close()
 
 
 app = FastAPI(
@@ -62,9 +73,13 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    mongodb_healthy = await mongodb.health_check()
+    conversation_count = await mongo_conversation_manager.get_conversation_count() if mongodb_healthy else 0
+    
     return {
-        "status": "healthy",
-        "conversations_in_memory": conversation_manager.get_conversation_count()
+        "status": "healthy" if mongodb_healthy else "degraded",
+        "mongodb": "connected" if mongodb_healthy else "disconnected",
+        "conversations_count": conversation_count
     }
 
 
@@ -92,12 +107,16 @@ async def chat_stream(request: ChatRequest):
         
         if request.save_conversation:
             if not conversation_id:
-                conversation_id = conversation_manager.create_conversation()
-            elif not conversation_manager.conversation_exists(conversation_id):
-                logger.warning(f"Conversation {conversation_id} not found, creating new one")
-                conversation_id = conversation_manager.create_conversation()
+                conversation_id = await mongo_conversation_manager.create_conversation(
+                    temporary=True
+                )
+            elif not await mongo_conversation_manager.conversation_exists(conversation_id):
+                logger.warning(f"Conversation {conversation_id} not found, creating new conversation with fresh UUID")
+                conversation_id = await mongo_conversation_manager.create_conversation(
+                    temporary=True
+                )
             
-            conversation_history = conversation_manager.get_conversation_history(
+            conversation_history = await mongo_conversation_manager.get_conversation_history(
                 conversation_id,
                 max_messages=20  
             )
@@ -109,27 +128,33 @@ async def chat_stream(request: ChatRequest):
             full_response = ""
             
             try:
-                yield f"data: {{'conversation_id': '{conversation_id or ''}', 'model': '{request.model.value}'}}\n\n"
+                initial_data = json.dumps({
+                    'conversation_id': conversation_id or '',
+                    'model': request.model.value
+                })
+                yield f"data: {initial_data}\n\n"
                 
                 async for content in groq.stream_chat_completion(payload):
                     full_response += content
-                    yield f"data: {{'content': {repr(content)}, 'finished': false}}\n\n"
+                    chunk_data = json.dumps({
+                        'content': content,
+                        'finished': False
+                    })
+                    yield f"data: {chunk_data}\n\n"
                 
-                yield f"data: {{'content': '', 'finished': true}}\n\n"
+                final_data = json.dumps({
+                    'content': '',
+                    'finished': True
+                })
+                yield f"data: {final_data}\n\n"
                 
                 if request.save_conversation and conversation_id:
-                    if request.system_prompt:
-                        conversation_manager.add_message(
-                            conversation_id,
-                            "system",
-                            request.system_prompt
-                        )
-                    conversation_manager.add_message(
+                    await mongo_conversation_manager.add_message(
                         conversation_id,
                         "user",
                         request.user_prompt
                     )
-                    conversation_manager.add_message(
+                    await mongo_conversation_manager.add_message(
                         conversation_id,
                         "assistant",
                         full_response
@@ -138,8 +163,11 @@ async def chat_stream(request: ChatRequest):
                 
             except Exception as e:
                 logger.error(f"Error during streaming: {e}")
-                error_msg = str(e).replace("'", "\\'")
-                yield f"data: {{'error': '{error_msg}', 'finished': true}}\n\n"
+                error_data = json.dumps({
+                    'error': str(e),
+                    'finished': True
+                })
+                yield f"data: {error_data}\n\n"
         
         return StreamingResponse(
             generate_stream(),
@@ -174,10 +202,10 @@ async def get_conversation(conversation_id: str):
     Returns:
         Conversation history
     """
-    if not conversation_manager.conversation_exists(conversation_id):
+    if not await mongo_conversation_manager.conversation_exists(conversation_id):
         raise HTTPException(status_code=404, detail="Conversation not found")
     
-    history = conversation_manager.get_conversation_history(conversation_id)
+    history = await mongo_conversation_manager.get_conversation_history(conversation_id)
     
     return {
         "conversation_id": conversation_id,
@@ -196,7 +224,7 @@ async def delete_conversation(conversation_id: str):
     Returns:
         Success message
     """
-    if not conversation_manager.delete_conversation(conversation_id):
+    if not await mongo_conversation_manager.delete_conversation(conversation_id):
         raise HTTPException(status_code=404, detail="Conversation not found")
     
     return {"message": "Conversation deleted successfully"}
