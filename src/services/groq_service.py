@@ -24,27 +24,21 @@ class GroqService:
         Returns:
             Configured ChatGroq instance
         """
-        # Map our hyperparameters to LangChain parameters
         langchain_params = {
             "model": model,
             "groq_api_key": self.api_key,
             "streaming": True,
         }
         
-        # Add optional parameters
         if "temperature" in hyperparameters:
             langchain_params["temperature"] = hyperparameters["temperature"]
         if "max_tokens" in hyperparameters:
             langchain_params["max_tokens"] = hyperparameters["max_tokens"]
-        
+    
         # Add model_kwargs for parameters not directly supported
         model_kwargs = {}
         if "top_p" in hyperparameters:
             model_kwargs["top_p"] = hyperparameters["top_p"]
-        if "frequency_penalty" in hyperparameters:
-            model_kwargs["frequency_penalty"] = hyperparameters["frequency_penalty"]
-        if "presence_penalty" in hyperparameters:
-            model_kwargs["presence_penalty"] = hyperparameters["presence_penalty"]
         if "stop" in hyperparameters and hyperparameters["stop"]:
             langchain_params["stop"] = hyperparameters["stop"]
         
