@@ -105,6 +105,7 @@ async def chat_stream(request: ChatRequest):
         conversation_history = None
         conversation_id = request.conversation_id
         
+        # Only handle conversation history if save_conversation is True
         if request.save_conversation:
             if not conversation_id:
                 conversation_id = await mongo_conversation_manager.create_conversation(
@@ -116,11 +117,17 @@ async def chat_stream(request: ChatRequest):
                     temporary=True
                 )
             
+            # Retrieve conversation history for context
             conversation_history = await mongo_conversation_manager.get_conversation_history(
                 conversation_id,
                 max_messages=20  
             )
+            logger.info(f"Retrieved {len(conversation_history) if conversation_history else 0} messages from conversation history")
+        else:
+            # When save_conversation is False, ignore conversation history entirely
+            logger.info("Stateless mode: ignoring conversation history")
         
+        # Build payload with or without conversation history
         payload = request.to_messages(conversation_history)
         
         async def generate_stream() -> AsyncGenerator[str, None]:
@@ -148,6 +155,7 @@ async def chat_stream(request: ChatRequest):
                 })
                 yield f"data: {final_data}\n\n"
                 
+                # Only save messages if save_conversation is True
                 if request.save_conversation and conversation_id:
                     await mongo_conversation_manager.add_message(
                         conversation_id,
@@ -160,6 +168,8 @@ async def chat_stream(request: ChatRequest):
                         full_response
                     )
                     logger.info(f"Saved conversation to {conversation_id}")
+                else:
+                    logger.info("Stateless mode: skipping message save")
                 
             except Exception as e:
                 logger.error(f"Error during streaming: {e}")
